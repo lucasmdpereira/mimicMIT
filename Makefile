@@ -1,45 +1,70 @@
-setup:
-	@echo "Setting password for non-interactive commands..."
-	export PGPASSWORD=1234
-	@echo "Starting PostgreSQL container..."
-	-docker run --name postgres-mimic -e POSTGRES_PASSWORD=1234 -p 5432:5432 -d postgres
-	@echo "PostgreSQL server started. Waiting a few seconds for it to initialize..."
-	@sleep 5
-	@echo "Creating the 'mimic' database..."
-	-createdb -h localhost -p 5432 -U postgres mimic
-	@echo "Database 'mimic' created."
-	@echo "Cloning MIMIC-III code repository..."
-	-git clone https://github.com/MIT-LCP/mimic-code.git
-	@echo "MIMIC-III code repository cloned."
-	@echo "Installing PostgreSQL client..."
-	-sudo apt update
-	-sudo apt install -y postgresql-client
-	@echo "PostgreSQL client installed."
-	@echo "Setup complete. You can now run 'make create' to build the tables and load the data."
-	@echo "Decompressing data files..."
-	-gunzip /home/pereira/ufsj/mimic/files/hosp/*.csv.gz # Path to the MIMIC-III data files
-	-gunzip /home/pereira/ufsj/mimic/files/icu/*.csv.gz  # Path to the MIMIC-III data files
-	@echo "Data files decompressed."
+export PGPASSWORD=1234
+PG_HOST=localhost
+PG_PORT=5432
+PG_USER=postgres
+DB_NAME=mimiciv
+MIMIC_CODE_DIR=./mimic-code
+DATA_DIR=/home/pereira/UFSJ/mimicMIT/files
 
-create:
-	@echo "Creating MIMIC-III database..."
-	psql -h localhost -p 5432 -U postgres -W -f mimic-code/mimic-iv/buildmimic/postgres/create.sql
-	@echo "Loading MIMIC-III data..."
-	psql -h localhost -p 5432 -U postgres -d mimic -W \
-	-v mimic_data_dir='/home/pereira/ufsj/mimic/files' \ # Path to the MIMIC-III data files
-	-f mimic-code/mimic-iv/buildmimic/postgres/load.sql
-	@echo "Data loaded into MIMIC-III database."
-	@echo "Creating indexes on MIMIC-III database..."
-	psql -h localhost -p 5432 -U postgres -d mimic -W -f mimic-code/mimic-iv/buildmimic/postgres/index.sql
-	@echo "Indexes created."
-	@echo "Creating constraints on MIMIC-III database..."
-	psql -h localhost -p 5432 -U postgres -d mimic -W -f mimic-code/mimic-iv/buildmimic/postgres/constraint.sql
-	@echo "Constraints created."
-	@echo "Creating concepts in MIMIC-III database..."
-	cd mimic-code/mimic-iv/concepts_postgres
-	psql -h localhost -p 5432 -U postgres -d mimic -W -f postgres-make-concepts.sql
-	@echo "Concepts created."
-	@echo "Testing MIMIC-III database..."
-	psql -h localhost -p 5432 -U postgres -d mimic \
-	-c "SELECT subject_id, stay_id, sepsis3 FROM mimic_derived.sepsis3 LIMIT 5;"
-	@echo "Testing complete. MIMIC-III database is ready for use."
+.PHONY: all setup_local create_tables load_data clean create_constraints create_indexes create_concepts
+all: setup_local create_tables load_data create_constraints create_indexes create_concepts
+	@echo "------------------------------------------------------"
+	@echo "Processo completo para MIMIC-IV concluído!"
+	@echo "------------------------------------------------------"
+
+setup_local: create_db clone_repo decompress_data
+	@echo "------------------------------------------------------"
+	@echo "Setup Local para MIMIC-IV completo!"
+	@echo "Execute 'make all' para rodar o processo completo."
+	@echo "------------------------------------------------------"
+
+create_db:
+	@echo "--> Verificando/Criando o banco de dados '$(DB_NAME)'..."
+	-createdb -h $(PG_HOST) -p $(PG_PORT) -U $(PG_USER) $(DB_NAME)
+
+clone_repo:
+	@if [ ! -d "$(MIMIC_CODE_DIR)" ]; then \
+		echo "--> Clonando o repositório de código do MIMIC..."; \
+		git clone https://github.com/MIT-LCP/mimic-code.git $(MIMIC_CODE_DIR); \
+	else \
+		echo "--> Repositório '$(MIMIC_CODE_DIR)' já existe. Pulando clonagem."; \
+	fi
+
+decompress_data:
+	@echo "--> Descompactando arquivos de dados (se necessário)..."
+	-gunzip $(DATA_DIR)/hosp/*.csv.gz
+	-gunzip $(DATA_DIR)/icu/*.csv.gz
+
+create_tables:
+	@echo "--> Criando tabelas do MIMIC-IV no banco de dados '$(DB_NAME)'..."
+	psql -h $(PG_HOST) -p $(PG_PORT) -U $(PG_USER) -d $(DB_NAME) -f $(MIMIC_CODE_DIR)/mimic-iv/buildmimic/postgres/create.sql
+	@echo "--> Tabelas criadas com sucesso."
+
+load_data:
+	@echo "--> Carregando dados do MIMIC-IV para o banco '$(DB_NAME)'..."
+	@echo "AVISO: Este processo pode demorar MUITO tempo."
+	psql -h $(PG_HOST) -p $(PG_PORT) -U $(PG_USER) -d $(DB_NAME) -v mimic_data_dir="$(DATA_DIR)" -f $(MIMIC_CODE_DIR)/mimic-iv/buildmimic/postgres/load.sql
+	@echo "--> Carga de dados finalizada."
+
+create_constraints:
+	@echo "--> Criando chaves primárias e estrangeiras (relacionamentos)..."
+	psql -h $(PG_HOST) -p $(PG_PORT) -U $(PG_USER) -d $(DB_NAME) -f $(MIMIC_CODE_DIR)/mimic-iv/buildmimic/postgres/constraints.sql
+	@echo "--> Constraints criados com sucesso."
+
+create_indexes:
+	@echo "--> Criando índices para performance..."
+	@echo "AVISO: Este processo também pode demorar."
+	psql -h $(PG_HOST) -p $(PG_PORT) -U $(PG_USER) -d $(DB_NAME) -f $(MIMIC_CODE_DIR)/mimic-iv/buildmimic/postgres/index.sql
+	@echo "--> Índices criados com sucesso."
+
+create_concepts:
+	@echo "--> Gerando conceitos derivados (tabelas de análise)..."
+	@echo "AVISO: Este processo é complexo e pode demorar bastante."
+	cd $(MIMIC_CODE_DIR)/mimic-iv/concepts_postgres && psql -h $(PG_HOST) -p $(PG_PORT) -U $(PG_USER) -d $(DB_NAME) -f postgres-make-concepts.sql
+	@echo "--> Conceitos derivados criados com sucesso."
+
+clean:
+	@echo "--> Apagando o banco de dados '$(DB_NAME)'..."
+	-dropdb -h $(PG_HOST) -p $(PG_PORT) -U $(PG_USER) $(DB_NAME)
+	@echo "--> Apagando o diretório de código clonado..."
+	-rm -rf $(MIMIC_CODE_DIR)
